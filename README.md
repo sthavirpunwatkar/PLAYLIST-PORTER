@@ -36,7 +36,7 @@ The Python script runs as a separate service. You need to run it independently o
     ```
 
 4.  **Configure Environment Variables for Python Service:**
-    The Python service requires Spotify API credentials. Create a `.env` file within the `src/python-scripts` directory (i.e., `src/python-scripts/.env`) or set these environment variables in your shell:
+    The Python service requires Spotify API credentials to interact with the Spotify API (even for Client Credentials flow or when using pre-obtained access tokens for some `spotipy` initializations). Create a `.env` file within the `src/python-scripts` directory (i.e., `src/python-scripts/.env`) or set these environment variables in your shell:
     ```env
     PYTHON_SPOTIPY_CLIENT_ID="your_spotify_developer_app_client_id"
     PYTHON_SPOTIPY_CLIENT_SECRET="your_spotify_developer_app_client_secret"
@@ -44,9 +44,15 @@ The Python script runs as a separate service. You need to run it independently o
     # PYTHON_SCRIPT_PORT=5001
     # PYTHON_DEBUG_MODE=true
     ```
-    Alternatively, you can define `PYTHON_SPOTIPY_CLIENT_ID` and `PYTHON_SPOTIPY_CLIENT_SECRET` in the main `.env` file at the root of the project, and they will be available if the Python script is run in an environment that inherits them (e.g. some deployment setups, but not always when run locally with `python example_processor.py` unless explicitly loaded or exported). The `example_processor.py` script includes `python-dotenv` to load a `.env` file from its own directory if present.
+    These `PYTHON_SPOTIPY_CLIENT_ID` and `PYTHON_SPOTIPY_CLIENT_SECRET` variables are used by `spotipy` in `example_processor.py`.
 
-5.  **Run the Python script:**
+5.  **Configure Spotify App Redirect URI in Spotify Developer Dashboard:**
+    When you create/configure your app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/), you need to add a Redirect URI.
+    *   For the current Next.js application (running on port `9002` by default), if you were to implement a full OAuth 2.0 Authorization Code Flow within Next.js, a suitable redirect URI would be `http://localhost:9002/api/auth/callback/spotify` (or similar, depending on your auth library/setup).
+    *   Even if your primary interaction with Spotify from Python is server-to-server or using pre-fetched tokens, Spotify often requires at least one redirect URI to be registered.
+    *   **Action:** Add `http://localhost:9002/api/auth/callback/spotify` (or another `http://localhost:...` URI like `http://localhost:8888/callback`) to your app's settings in the Spotify Developer Dashboard.
+
+6.  **Run the Python script:**
     ```bash
     python example_processor.py
     ```
@@ -74,5 +80,5 @@ Once both the Next.js app and the Python script are running:
 -   This proxy route will then forward these requests to the appropriate endpoint on your Python service (e.g., `http://localhost:5001/fetch-source-data`).
 
 **Note on Spotify Authentication:**
-The current Next.js application *simulates* Spotify user authentication and passes placeholder tokens to the Python backend. For the Python service to interact with the *real* Spotify API, the Next.js application would need to implement a full OAuth 2.0 flow to obtain genuine user access tokens and pass those to the Python service. The Python service is structured to use such tokens with Spotipy if provided.
+The current Next.js application *simulates* Spotify user authentication and passes placeholder tokens to the Python backend. For the Python service to interact with the *real* Spotify API using user-specific data, the Next.js application would need to implement a full OAuth 2.0 flow to obtain genuine user access tokens and pass those to the Python service. The Python service is structured to use such tokens with Spotipy if provided. If placeholder tokens are detected, the Python service currently returns mock data.
 ```
