@@ -45,7 +45,8 @@ def get_liked_songs(sp):
                     "name": item["track"]["name"],
                     "artist": ", ".join([artist["name"] for artist in item["track"]["artists"]]),
                     "album": item["track"]["album"]["name"],
-                    "imageUrl": item["track"]["album"]["images"][0]["url"] if item["track"]["album"]["images"] else None
+                    "imageUrl": item["track"]["album"]["images"][0]["url"] if item["track"]["album"]["images"] else None,
+                    "dataAiHint": "music track" # Add a default hint
                 })
         if results["next"]:
             results = sp.next(results)
@@ -66,7 +67,8 @@ def get_playlists(sp):
                     "owner": item["owner"]["display_name"] if item["owner"] else "Unknown",
                     "trackCount": item["tracks"]["total"] if item["tracks"] else 0,
                     "imageUrl": item["images"][0]["url"] if item["images"] else None,
-                    "description": item.get("description", "")
+                    "description": item.get("description", ""),
+                    "dataAiHint": "music album" # Add a default hint
                 })
         if results["next"]:
             results = sp.next(results)
@@ -105,7 +107,9 @@ def fetch_source_data_route():
         })
 
     try:
-        sp_source = spotipy.Spotify(auth=source_token, client_credentials_manager=spotipy.oauth2.SpotifyClientCredentials(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET))
+        # For real calls, ensure client_credentials_manager is appropriate or removed if auth flow handles tokens
+        credentials_manager = spotipy.oauth2.SpotifyClientCredentials(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET)
+        sp_source = spotipy.Spotify(auth=source_token, client_credentials_manager=credentials_manager)
         
         playlists = get_playlists(sp_source)
         liked_songs = get_liked_songs(sp_source)
@@ -115,7 +119,8 @@ def fetch_source_data_route():
             "likedSongs": liked_songs
         })
     except spotipy.exceptions.SpotifyException as e:
-        return jsonify({"error": f"Spotify API error: {str(e)}", "details": "This might be due to an invalid or expired token."}), e.status_code if hasattr(e, 'status_code') else 500
+        app.logger.error(f"Spotify API error during fetch: {e}")
+        return jsonify({"error": f"Spotify API error: {str(e)}", "details": "This might be due to an invalid or expired token, or API configuration issues."}), e.status_code if hasattr(e, 'status_code') else 500
     except Exception as e:
         app.logger.error(f"Error fetching source data: {e}")
         return jsonify({"error": "An internal error occurred in the Python script while fetching source data.", "details": str(e)}), 500
@@ -137,72 +142,92 @@ def copy_items_route():
         return jsonify({"success": True, "message": message})
 
     try:
-        sp_source = spotipy.Spotify(auth=source_token, client_credentials_manager=spotipy.oauth2.SpotifyClientCredentials(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET))
-        sp_destination = spotipy.Spotify(auth=destination_token, client_credentials_manager=spotipy.oauth2.SpotifyClientCredentials(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET))
+        credentials_manager = spotipy.oauth2.SpotifyClientCredentials(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET)
+        sp_source = spotipy.Spotify(auth=source_token, client_credentials_manager=credentials_manager)
+        sp_destination = spotipy.Spotify(auth=destination_token, client_credentials_manager=credentials_manager)
         
         destination_user_id = sp_destination.me()["id"]
         
         copied_playlists_count = 0
         copied_songs_count = 0
+        errors_encountered = []
 
         # Transfer Playlists
         for p_id in playlist_ids_to_copy:
             try:
-                # Fetch original playlist details (like name)
-                original_playlist = sp_source.playlist(p_id, fields="name,public,collaborative,description") # Add more fields if needed
-                new_playlist_name = original_playlist['name'] # Or modify if needed
+                original_playlist = sp_source.playlist(p_id, fields="name,public,collaborative,description")
+                new_playlist_name = original_playlist['name'] 
 
-                # Create new playlist in destination
                 new_playlist = sp_destination.user_playlist_create(
                     user=destination_user_id, 
                     name=new_playlist_name, 
-                    public=original_playlist.get('public', True), # Default to public
+                    public=original_playlist.get('public', True),
                     collaborative=original_playlist.get('collaborative', False),
                     description=original_playlist.get('description', '')
                 )
                 new_playlist_id = new_playlist["id"]
 
-                # Get tracks from old playlist
                 track_ids_to_add = get_playlist_tracks_ids(sp_source, p_id)
                 
-                # Add tracks in batches of 100 (Spotify limit for adding items)
                 if track_ids_to_add:
                     for i in range(0, len(track_ids_to_add), 100):
                         sp_destination.playlist_add_items(new_playlist_id, track_ids_to_add[i:i+100])
                 copied_playlists_count += 1
             except Exception as e_playlist:
                 app.logger.error(f"Error copying playlist {p_id}: {e_playlist}")
-                # Optionally, collect errors and report them, or stop
+                errors_encountered.append(f"Playlist {p_id} ('{original_playlist.get('name', 'Unknown name') if 'original_playlist' in locals() else 'Unknown ID'}'): {str(e_playlist)}")
+
 
         # Add Liked Songs
         if song_ids_to_add_to_library:
-             # Filter out None or empty strings from song_ids_to_add_to_library, just in case
             valid_song_ids = [sid for sid in song_ids_to_add_to_library if sid]
             if valid_song_ids:
-                for i in range(0, len(valid_song_ids), 50): # Batches of 50 for adding to library
-                    sp_destination.current_user_saved_tracks_add(valid_song_ids[i:i+50])
-                copied_songs_count = len(valid_song_ids)
+                # To preserve the original "Date Added" order (newest on top in Spotify UI),
+                # the list of song IDs (which is typically newest to oldest if all selected from UI)
+                # needs to be reversed. This way, the oldest songs are added to the library first,
+                # and the newest songs are added last. When viewed in Spotify, the newest songs
+                # (added last) will appear at the top.
+                ids_to_add_in_order = list(reversed(valid_song_ids))
+                for i in range(0, len(ids_to_add_in_order), 50): # Batches of 50 for adding to library
+                    try:
+                        sp_destination.current_user_saved_tracks_add(ids_to_add_in_order[i:i+50])
+                    except Exception as e_songs:
+                        app.logger.error(f"Error adding batch of liked songs: {e_songs}")
+                        errors_encountered.append(f"Batch of Liked Songs (starting {ids_to_add_in_order[i]}): {str(e_songs)}")
+                        # Decide if you want to stop or continue with other batches
+                if not errors_encountered: # or based on a more specific check for song errors
+                    copied_songs_count = len(valid_song_ids)
         
-        message = f"Successfully copied {copied_playlists_count} playlists and {copied_songs_count} liked songs using Python."
+        message = f"Successfully attempted to copy {copied_playlists_count} playlists and {copied_songs_count} liked songs using Python."
+        if errors_encountered:
+            message += f" However, some errors occurred: {'; '.join(errors_encountered)}"
+            return jsonify({"success": False, "message": message, "error_details": errors_encountered})
+
         return jsonify({"success": True, "message": message})
 
     except spotipy.exceptions.SpotifyException as e:
-        return jsonify({"error": f"Spotify API error: {str(e)}", "details": "This might be due to an invalid or expired token."}), e.status_code if hasattr(e, 'status_code') else 500
+        app.logger.error(f"Spotify API error during copy: {e}")
+        return jsonify({"error": f"Spotify API error: {str(e)}", "details": "This might be due to an invalid or expired token, or API config issues."}), e.status_code if hasattr(e, 'status_code') else 500
     except Exception as e:
         app.logger.error(f"Error copying items: {e}")
         return jsonify({"error": "An internal error occurred in the Python script while copying items.", "details": str(e)}), 500
 
 # Placeholder for followed artists - not yet used by Next.js app
 def get_followed_artists(sp):
-    artists_ids = []
+    artists_ids = [] # Corrected variable name from 'artists' to 'artists_ids'
     results = sp.current_user_followed_artists(limit=50)
+    # The API returns artists in a structure like: {"artists": {"items": [...], "next": ...}}
     while results and "artists" in results and results["artists"]["items"]:
         for item in results["artists"]["items"]:
-            artists_ids.append(item["id"])
+            if item and item["id"]: # Ensure item and id exist
+                artists_ids.append(item["id"])
+        
+        # Check if there's a next page and fetch it
         if results["artists"]["next"]:
             results = sp.next(results["artists"])
         else:
-            break
+            break # No more pages
+            
     return artists_ids
 
 def transfer_followed_artists(sp_source, sp_destination):
@@ -230,3 +255,5 @@ if __name__ == '__main__':
     port = int(os.environ.get('PYTHON_SCRIPT_PORT', 5001))
     debug_mode = os.environ.get('PYTHON_DEBUG_MODE', 'False').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug_mode)
+
+    
