@@ -1,3 +1,4 @@
+// src/app/(main)/page.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -12,25 +13,44 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 export default function HomePage() {
   const [sourceConnected, setSourceConnected] = useState(false);
   const [destinationConnected, setDestinationConnected] = useState(false);
-  // States for user objects are not strictly needed on this page for now,
-  // but could be used to display user info if desired.
-  // const [sourceUser, setSourceUser] = useState<SpotifyUser | null>(null);
-  // const [destinationUser, setDestinationUser] = useState<SpotifyUser | null>(null);
+  // These states will store the placeholder tokens
+  const [, setSourceToken] = useState<string | null>(null);
+  const [, setDestinationToken] = useState<string | null>(null);
+
 
   useEffect(() => {
-    // Initialize connection states from localStorage
-    setSourceConnected(localStorage.getItem('sourceConnected') === 'true');
-    setDestinationConnected(localStorage.getItem('destinationConnected') === 'true');
+    // Initialize connection states and tokens from localStorage
+    const initialSourceConnected = localStorage.getItem('sourceConnected') === 'true';
+    const initialDestinationConnected = localStorage.getItem('destinationConnected') === 'true';
+    const initialSourceToken = localStorage.getItem('sourceAccessToken');
+    const initialDestinationToken = localStorage.getItem('destinationAccessToken');
+
+    setSourceConnected(initialSourceConnected);
+    setDestinationConnected(initialDestinationConnected);
+    setSourceToken(initialSourceToken);
+    setDestinationToken(initialDestinationToken);
   }, []);
 
-  const handleSourceConnectionChange = (isConnected: boolean, user?: SpotifyUser) => {
+  const handleSourceConnectionChange = (isConnected: boolean, _user?: SpotifyUser, token?: string) => {
     setSourceConnected(isConnected);
-    // if (user) setSourceUser(user); else setSourceUser(null);
+    if (isConnected && token) {
+      localStorage.setItem('sourceAccessToken', token);
+      setSourceToken(token);
+    } else {
+      localStorage.removeItem('sourceAccessToken');
+      setSourceToken(null);
+    }
   };
 
-  const handleDestinationConnectionChange = (isConnected: boolean, user?: SpotifyUser) => {
+  const handleDestinationConnectionChange = (isConnected: boolean, _user?: SpotifyUser, token?: string) => {
     setDestinationConnected(isConnected);
-    // if (user) setDestinationUser(user); else setDestinationUser(null);
+    if (isConnected && token) {
+      localStorage.setItem('destinationAccessToken', token);
+      setDestinationToken(token);
+    } else {
+      localStorage.removeItem('destinationAccessToken');
+      setDestinationToken(null);
+    }
   };
   
   const canProceedToSelect = sourceConnected;

@@ -2,17 +2,14 @@
 import { type NextRequest, NextResponse } from 'next/server';
 
 // Ensure PYTHON_SERVICE_URL is set in your .env file
-// Example: PYTHON_SERVICE_URL=http://localhost:5001/process
-const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL;
+const PYTHON_SERVICE_BASE_URL = process.env.PYTHON_SERVICE_URL;
 
-if (!PYTHON_SERVICE_URL) {
+if (!PYTHON_SERVICE_BASE_URL) {
   console.error("PYTHON_SERVICE_URL environment variable is not set.");
-  // Optional: throw an error during build/startup if critical
-  // throw new Error("PYTHON_SERVICE_URL environment variable is not set.");
 }
 
 export async function POST(request: NextRequest) {
-  if (!PYTHON_SERVICE_URL) {
+  if (!PYTHON_SERVICE_BASE_URL) {
     return NextResponse.json(
       { message: 'Python service URL is not configured on the server.' },
       { status: 500 }
@@ -20,33 +17,38 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = await request.json();
+    const requestBody = await request.json();
+    const { __python_endpoint, ...actualBody } = requestBody;
+
+    if (!__python_endpoint) {
+      return NextResponse.json(
+        { message: "Missing '__python_endpoint' in request body to proxy." },
+        { status: 400 }
+      );
+    }
+    
+    const targetUrl = `${PYTHON_SERVICE_BASE_URL.replace(/\/$/, '')}${__python_endpoint}`;
 
     // Forward the request to the Python service
-    const pythonResponse = await fetch(PYTHON_SERVICE_URL, {
-      method: 'POST',
+    const pythonResponse = await fetch(targetUrl, {
+      method: 'POST', // Assuming all calls to Python service are POST for simplicity
       headers: {
         'Content-Type': 'application/json',
-        // Add any other headers your Python service might expect
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(actualBody), // Send only the actual body, not the endpoint specifier
     });
 
-    // Read the response body as text first to handle non-JSON errors better
     const responseText = await pythonResponse.text();
 
     if (!pythonResponse.ok) {
       let errorDetails = responseText;
       try {
-        // Attempt to parse if the error response from Python is JSON
         errorDetails = JSON.parse(responseText);
-      } catch (e) {
-        // If not JSON, use the raw text
-      }
-      console.error('Error from Python service:', pythonResponse.status, errorDetails);
+      } catch (e) { /* If not JSON, use raw text */ }
+      console.error(`Error from Python service (${targetUrl}):`, pythonResponse.status, errorDetails);
       return NextResponse.json(
         { 
-          message: 'Error received from Python service.',
+          message: `Error received from Python service endpoint: ${__python_endpoint}.`,
           statusCode: pythonResponse.status,
           details: errorDetails 
         },
@@ -54,14 +56,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // If response is OK, assume it's JSON and parse it
     let data;
     try {
       data = JSON.parse(responseText);
     } catch (e) {
-      console.error('Failed to parse JSON response from Python service:', e);
+      console.error(`Failed to parse JSON response from Python service (${targetUrl}):`, e);
       return NextResponse.json(
-        { message: 'Received non-JSON response from Python service.', details: responseText },
+        { message: `Received non-JSON response from Python service endpoint: ${__python_endpoint}.`, details: responseText },
         { status: 502 } // Bad Gateway
       );
     }
@@ -71,7 +72,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error in Python proxy API route:', error);
     const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-    // Check for fetch errors specifically (e.g., service unavailable)
     if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed')) {
        return NextResponse.json(
         { message: 'Could not connect to the Python service. Ensure it is running and accessible.', details: errorMessage },
@@ -85,9 +85,8 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Optional: GET handler for testing the proxy or its configuration
 export async function GET() {
-  if (!PYTHON_SERVICE_URL) {
+  if (!PYTHON_SERVICE_BASE_URL) {
     return NextResponse.json(
       { 
         status: 'misconfigured',
@@ -96,9 +95,23 @@ export async function GET() {
       { status: 500 }
     );
   }
-  return NextResponse.json({ 
-    status: 'running',
-    message: 'Python Proxy API is running. Use POST to send data.',
-    python_service_target: PYTHON_SERVICE_URL 
-  });
+  // Check connectivity to the Python service's health endpoint
+  try {
+    const healthCheckUrl = `${PYTHON_SERVICE_BASE_URL.replace(/\/$/, '')}/`; // Assuming '/' is health check
+    const pythonHealthResponse = await fetch(healthCheckUrl);
+    const pythonHealthData = await pythonHealthResponse.json();
+    return NextResponse.json({ 
+      status: 'running',
+      message: 'Python Proxy API is running. Use POST to send data to specific Python endpoints.',
+      python_service_target_base_url: PYTHON_SERVICE_BASE_URL,
+      python_service_health: pythonHealthData
+    });
+  } catch (e) {
+    return NextResponse.json({ 
+      status: 'partially_running',
+      message: 'Python Proxy API is running, but could not connect to Python service health check.',
+      python_service_target_base_url: PYTHON_SERVICE_BASE_URL,
+      error: (e as Error).message
+    }, {status: 503});
+  }
 }

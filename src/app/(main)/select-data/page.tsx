@@ -1,3 +1,4 @@
+// src/app/(main)/select-data/page.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -7,14 +8,15 @@ import PageTitle from '@/components/common/PageTitle';
 import PlaylistItemCard from '@/components/spotify/PlaylistItemCard';
 import SongItemCard from '@/components/spotify/SongItemCard';
 import { Button } from '@/components/ui/button';
-import { fetchSourceAccountData } from '@/lib/actions';
+import { fetchSourceAccountData } from '@/lib/actions'; // Updated to use Python backend
 import type { SpotifyPlaylist, SpotifyTrack } from '@/types';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
 import { useToast } from '@/hooks/use-toast';
 import { Separator } from '@/components/ui/separator';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { CopyPlus, ListMusic, Heart } from 'lucide-react';
+import { CopyPlus, ListMusic, Heart, AlertTriangle } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function SelectDataPage() {
   const router = useRouter();
@@ -26,10 +28,13 @@ export default function SelectDataPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSourceConnected, setIsSourceConnected] = useState(false);
   const [isDestinationConnected, setIsDestinationConnected] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     const sourceConnected = localStorage.getItem('sourceConnected') === 'true';
     const destinationConnected = localStorage.getItem('destinationConnected') === 'true';
+    const sourceToken = localStorage.getItem('sourceAccessToken');
+
     setIsSourceConnected(sourceConnected);
     setIsDestinationConnected(destinationConnected);
 
@@ -42,17 +47,46 @@ export default function SelectDataPage() {
       router.push('/');
       return;
     }
+    if (!sourceToken) {
+      toast({
+        title: "Source Token Missing",
+        description: "Source account token not found. Please reconnect.",
+        variant: "destructive",
+      });
+      // Potentially clear connection state and redirect
+      // localStorage.removeItem('sourceConnected');
+      // localStorage.removeItem('sourceUser');
+      // localStorage.removeItem('sourceAccessToken');
+      router.push('/');
+      return;
+    }
 
     async function loadData() {
+      setIsLoading(true);
+      setFetchError(null);
       try {
-        const data = await fetchSourceAccountData();
-        setPlaylists(data.playlists);
-        setLikedSongs(data.likedSongs);
+        const data = await fetchSourceAccountData(sourceToken);
+        if (data.error) {
+          setFetchError(data.error);
+          toast({
+            title: "Error Fetching Data",
+            description: data.error || "Could not load your playlists and liked songs from Python service.",
+            variant: "destructive",
+          });
+          // Keep existing mock data or empty if preferred on error
+          // setPlaylists(MOCK_SPOTIFY_PLAYLISTS); // Fallback example
+          // setLikedSongs(MOCK_SPOTIFY_LIKED_SONGS);
+        } else {
+          setPlaylists(data.playlists);
+          setLikedSongs(data.likedSongs);
+        }
       } catch (error) {
-        console.error("Error fetching source data:", error);
+        console.error("Critical error fetching source data:", error);
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setFetchError(errorMessage);
         toast({
-          title: "Error Fetching Data",
-          description: "Could not load your playlists and liked songs.",
+          title: "Critical Error Fetching Data",
+          description: errorMessage,
           variant: "destructive",
         });
       } finally {
@@ -109,17 +143,17 @@ export default function SelectDataPage() {
       toast({
         title: "No Items Selected",
         description: "Please select at least one playlist or liked song to copy.",
-        variant: "default",
+        variant: "default", // Changed from "destructive"
       });
       return;
     }
-
+    // Tokens will be retrieved from localStorage in copy-status page or passed through state if preferred
     localStorage.setItem('selectedPlaylistIds', JSON.stringify(Array.from(selectedPlaylistIds)));
     localStorage.setItem('selectedSongIds', JSON.stringify(Array.from(selectedSongIds)));
     router.push('/copy-status');
   };
 
-  if (!isSourceConnected && !isLoading) { // Handles edge case if localStorage check fails and redirect doesn't happen fast enough
+   if (!isSourceConnected && !isLoading) {
     return (
        <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <p className="mt-4 text-muted-foreground text-lg">Redirecting... Source account not connected.</p>
@@ -131,7 +165,33 @@ export default function SelectDataPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <LoadingSpinner size={48} />
-        <p className="mt-4 text-muted-foreground">Loading your music...</p>
+        <p className="mt-4 text-muted-foreground">Loading your music via Python service...</p>
+      </div>
+    );
+  }
+  
+  if (fetchError) {
+    return (
+      <div className="space-y-8">
+        <PageTitle>Select Data to Copy</PageTitle>
+        <Card className="border-destructive bg-destructive/10">
+          <CardHeader>
+            <CardTitle className="text-destructive flex items-center">
+              <AlertTriangle className="mr-2 h-5 w-5" />
+              Failed to Load Music Data
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-destructive-foreground mb-2">
+              There was an error fetching your music data from the Python service:
+            </p>
+            <p className="text-destructive-foreground font-mono bg-destructive/20 p-2 rounded text-sm">{fetchError}</p>
+            <p className="text-destructive-foreground mt-4">
+              Please ensure the Python service is running correctly and accessible. You might need to check its logs.
+              You can try <Button variant="link" onClick={() => window.location.reload()} className="p-0 h-auto text-destructive-foreground underline">reloading the page</Button> or returning to <Link href="/" className="underline">Home</Link>.
+            </p>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -142,6 +202,7 @@ export default function SelectDataPage() {
       <p className="text-muted-foreground">
         Choose the playlists and liked songs you want to transfer from your source account.
         Ensure your destination account is connected on the <Link href="/" className="underline hover:text-primary">home page</Link>.
+        Data is being fetched via the Python backend.
       </p>
 
       <section className="space-y-6">
@@ -173,7 +234,7 @@ export default function SelectDataPage() {
             ))}
           </div>
         ) : (
-          <p className="text-muted-foreground py-4">No playlists found in your source account.</p>
+          <p className="text-muted-foreground py-4">No playlists found in your source account (via Python service).</p>
         )}
       </section>
 
@@ -208,7 +269,7 @@ export default function SelectDataPage() {
             ))}
           </div>
         ) : (
-          <p className="text-muted-foreground py-4">No liked songs found in your source account.</p>
+          <p className="text-muted-foreground py-4">No liked songs found in your source account (via Python service).</p>
         )}
       </section>
       
